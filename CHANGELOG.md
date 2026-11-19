@@ -21,7 +21,13 @@ SemVer applies: versions 0.x/3.x-beta are pre-1.0; from 4.0.0 onward the public 
   `table.js` 的编译快路径补齐与 `_matchOperator` 一致的 `valuesEqual` /
   `arrayIncludesValue` 判等（`$ne` 用严格 `!==`，同字节 ObjectId 被误判），
   并修复 ObjectId 查询条件被当嵌套对象编译的问题（任一侧被 `toString()`
-  缓存过 `_hex` 后等值静默失效）。索引快路径（B-Tree 等值 / `$in` / 范围、
+  缓存过 `_hex` 后等值静默失效）；同类的 Date / Buffer 查询条件一并修复
+  （零枚举键对象不再当嵌套条件编译，日期列的 Date 查询值经 `validateDateType`
+  归一成落库字符串，`valuesEqual` 支持 Date 按 `getTime()` 相等）。wire 端
+  `_match` 修复 vacuous 通过：非 `$` 前缀键的条件（嵌套文档 / Date）此前
+  匹配全表（update/delete 同路径），现按值相等处理；补字段级 `$not`；
+  `$type: 'array'`（typeof 数组是 'object'，此前恒不命中）；`$all: []`
+  恒不匹配。索引快路径（B-Tree 等值 / `$in` / 范围、
   hash 等值）在 schemaless 与 object/array/json 类型列上改走全表过滤——
   索引键只存整字段值，元素命中行会被静默丢弃；范围路径同时补上与其他
   路径一致的空命中回落。标量类型列的索引行为不变。已知限制：整数组等值

@@ -165,6 +165,46 @@ const ids = (batch) => batch.map((d) => d._id).sort((a, b) => a - b);
       const upd = await db.update('t', { tags: 'a' }, { $set: { hit: true } });
       ok('update 按数组语义命中所有行', upd === 2, upd);
     }
+    /* ---------- 复审修复：$all:[]、wire 空键条件、Date 等值、$type array、字段级 $not ---------- */
+    {
+      const srv = createMongoServer({ port: 0, noAuth: true, dataDir: ':memory:' });
+      await (await srv._getEngine('test')).createTable('c', {});
+      await insert(srv, [
+        { _id: 1, tags: ['a', 'b'], scores: [5, 15], d: new Date('2026-01-01T00:00:00Z'), user: { name: 'x' } },
+        { _id: 2, tags: ['b'], scores: [25], d: new Date('2026-06-01T00:00:00Z'), user: { name: 'y' } },
+      ]);
+
+      ok('wire {$all:[]} 恒不匹配', (await find(srv, { tags: { $all: [] } })).length === 0);
+      ok('wire {user:{name:"x"}} 不再 vacuous 匹配全表（子文档等值：宁缺勿滥）', (await find(srv, { user: { name: 'x' } })).length === 0);
+      ok('wire Date 等值（getTime 语义）', JSON.stringify(ids(await find(srv, { d: new Date('2026-01-01T00:00:00Z') }))) === '[1]');
+      ok('wire {$type:"array"}', JSON.stringify(ids(await find(srv, { tags: { $type: 'array' } }))) === '[1,2]');
+      ok('wire 字段级 $not', JSON.stringify(ids(await find(srv, { scores: { $not: { $gt: 15 } } }))) === '[1]');
+      ok('wire {$all:["b"]}', JSON.stringify(ids(await find(srv, { tags: { $all: ['b'] } }))) === '[1,2]');
+
+      // table.js：$all:[] / 日期列 Date 查询值归一 / schemaless Date 等值 / $type array
+      const db = new Database(':memory:');
+      await db.createTable('dt', { id: { type: 'integer', primaryKey: true }, d: { type: 'date' } });
+      await db.insert('dt', { id: 1, d: new Date('2026-01-01T10:30:00Z') });
+      await db.insert('dt', { id: 2, d: new Date('2026-06-01T10:30:00Z') });
+      const byDate = await db.find('dt', { d: new Date('2026-01-01T00:00:00Z') });
+      ok('table 日期列 find({d: Date}) 归一后命中', JSON.stringify(byDate.map((r) => r.id)) === '[1]', byDate.map((r) => r.id));
+      const gtDate = await db.find('dt', { d: { $gt: new Date('2026-01-01T00:00:00Z') } });
+      ok('table 日期列范围查询（Date 归一成存储字符串后比较）', JSON.stringify(gtDate.map((r) => r.id)) === '[2]', gtDate.map((r) => r.id));
+
+      await db.createTable('sd', {});
+      await db.insert('sd', { _id: 1, at: new Date('2026-01-01T00:00:00Z') });
+      await db.insert('sd', { _id: 2, at: new Date('2026-06-01T00:00:00Z') });
+      const schemalessDate = await db.find('sd', { at: new Date('2026-01-01T00:00:00Z') });
+      ok('table schemaless Date 等值（valuesEqual getTime）', JSON.stringify(schemalessDate.map((r) => r._id)) === '[1]', schemalessDate.map((r) => r._id));
+
+      await db.createTable('ta', { id: { type: 'integer', primaryKey: true }, tags: { type: 'object' } });
+      await db.insert('ta', { id: 1, tags: ['a'] });
+      await db.insert('ta', { id: 2, tags: 'plain' });
+      const arrType = await db.find('ta', { tags: { $type: 'array' } });
+      ok('table {$type:"array"}（typeof 陷阱）', JSON.stringify(arrType.map((r) => r.id)) === '[1]', arrType.map((r) => r.id));
+      const allEmpty = await db.find('ta', { tags: { $all: [] } });
+      ok('table {$all:[]} 恒不匹配', allEmpty.length === 0);
+    }
   } catch (e) {
     fail++;
     console.log('[FAIL] unexpected exception:', e && e.stack || e);
